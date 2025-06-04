@@ -1,0 +1,2 @@
+menu_item : main : Get My RSS : cmd_spawn : python /mnt/onboard/.adds/rss/rss.py 
+menu_item : main : Check RSS Status : cmd_output : 500 : if ps | grep -v grep | grep -q "python /mnt/onboard/.adds/rss/rss.py"; then echo "rss.py is running."; else echo "rss.py is idle."; fi

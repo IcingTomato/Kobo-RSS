@@ -1,0 +1,5 @@
+feedparser 
+ebooklib 
+beautifulsoup4 
+requests
+pillow
