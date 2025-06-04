@@ -2,7 +2,7 @@
 
 Kobo eReader RSS 链接集合转 ePub 脚本
 
-<img src="../img/screen_001.png" alt="rss" width="50%">
+<img src="../img/screen_001.png" alt="rss" width="30%"><img src="../img/screen_002.png" alt="rss" width="30%"><img src="../img/screen_003.png" alt="rss" width="30%">
 
 ## 安装
 

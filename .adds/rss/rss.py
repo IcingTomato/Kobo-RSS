@@ -118,7 +118,7 @@ def fetch_rss_content(url):
         print(f"Feed title: {feed.feed.get('title', 'Unknown')}")
         
         # Limit to just 5 most recent entries
-        feed.entries = feed.entries[:5]
+        feed.entries = feed.entries[:10]
         print(f"Retrieved {len(feed.entries)} entries from {url}")
         return feed
         
