@@ -115,3 +115,5 @@ Please refer to the [CHANGELOG.md](./doc/CHANGELOG.md) file for the latest chang
 ## TODO
 
 - [ ] Move to Google App Engine(GAE).
+- [ ] Add multiple image format conversion.
+- [ ] Reduce memory usage.
