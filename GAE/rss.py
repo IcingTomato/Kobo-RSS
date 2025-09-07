@@ -51,6 +51,7 @@ Requirements:
     - Pillow
 """
 
+
 import feedparser
 import requests
 from bs4 import BeautifulSoup
@@ -63,6 +64,11 @@ import random
 from PIL import Image, ImageDraw 
 import uuid 
 import stat
+import threading
+import queue
+import sys
+import concurrent.futures
+import time
 
 
 def read_config():
@@ -141,18 +147,144 @@ def clean_html(html_content):
     return str(soup)
 
 
-def download_images(html_content, book, feed_title):
-    """Download images in HTML content and replace with local paths"""
+
+def download_images(html_content, book, feed_title, referer=None):
+    """多线程下载图片并显示进度条"""
     soup = BeautifulSoup(html_content, 'html.parser')
     images = soup.find_all('img')
-    
-    for i, img in enumerate(images):
+    total = len(images)
+    if total == 0:
+        return str(soup)
+
+    # 用于线程间通信的队列
+    lock = threading.Lock()
+    progress = [0]
+
+    def show_progress():
+        bar_len = 30
+        last_done = -1
+        while True:
+            with lock:
+                done = progress[0]
+            if done != last_done:
+                percent = done / total if total > 0 else 1
+                filled_len = int(bar_len * percent)
+                bar = '█' * filled_len + '-' * (bar_len - filled_len)
+                sys.stdout.write(f'\r图片下载进度: |{bar}| {done}/{total}')
+                sys.stdout.flush()
+                last_done = done
+            if done >= total:
+                print()
+                break
+            import time
+            time.sleep(0.05)
+
+    def process_image(idx, img):
         try:
             img_url = img.get('src')
             if not img_url:
-                continue
-                
-            # Handle relative URLs
+                with lock:
+                    progress[0] += 1
+                return
+            
+            # 特殊处理数学公式URL
+            if 'equation' in img_url or 'tex=' in img_url:
+                # 提取LaTeX代码
+                try:
+                    from urllib.parse import parse_qs, urlparse
+                    parsed_url = urlparse(img_url)
+                    query_params = parse_qs(parsed_url.query)
+                    latex_code = query_params.get('tex', [''])[0]
+                    
+                    if latex_code:
+                        # 尝试使用在线LaTeX渲染服务
+                        latex_render_url = f"https://latex.codecogs.com/png.latex?\\dpi{{150}}\\bg{{white}}{latex_code}"
+                        headers = {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+                            'Accept-Language': 'en-US,en;q=0.9',
+                            'Accept-Encoding': 'gzip, deflate, br',
+                            'DNT': '1',
+                            'Connection': 'keep-alive',
+                            'Upgrade-Insecure-Requests': '1',
+                        }
+                        if referer:
+                            headers['Referer'] = referer
+                        
+                        img_resp = requests.get(latex_render_url, headers=headers, timeout=15)
+                        if img_resp.status_code == 200:
+                            try:
+                                from PIL import Image
+                                import io
+                                original_image = Image.open(io.BytesIO(img_resp.content))
+                                
+                                # 处理Palette模式
+                                if original_image.mode == 'P':
+                                    original_image = original_image.convert('RGBA')
+                                
+                                # 强制转换为RGB模式以确保兼容性
+                                if original_image.mode not in ['RGB', 'L']:
+                                    original_image = original_image.convert('RGB')
+                                
+                                original_width, original_height = original_image.size
+                                # 对于数学公式，保持原始大小或稍微缩小
+                                scale_factor = min(1.0, 800 / max(original_width, original_height)) if max(original_width, original_height) > 800 else 1.0
+                                new_width = int(original_width * scale_factor)
+                                new_height = int(original_height * scale_factor)
+                                resized_image = original_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                                
+                                # 确保调整大小后的图片也是RGB
+                                if resized_image.mode != 'RGB':
+                                    resized_image = resized_image.convert('RGB')
+                                
+                                img_bytes = io.BytesIO()
+                                
+                                # 总是保存为JPEG格式以保证兼容性
+                                resized_image.save(img_bytes, format='JPEG', quality=90, optimize=True)
+                                img_filename = f"equation_{feed_title.replace(' ', '_')}_{idx}.jpg"
+                                media_type = 'image/jpeg'
+                                
+                                resized_content = img_bytes.getvalue()
+                                img_item = epub.EpubItem(
+                                    uid=f'equation_{feed_title}_{idx}',
+                                    file_name=f'images/{img_filename}',
+                                    media_type=media_type,
+                                    content=resized_content
+                                )
+                                book.add_item(img_item)
+                                img_parent = img.parent
+                                new_div = soup.new_tag('div', **{'class': 'math-equation', 'style': 'text-align: center; margin: 1em 0; padding: 0.5em; background-color: #f8f8f8; border-radius: 4px;'})
+                                new_img = soup.new_tag('img', src=f'images/{img_filename}', alt=f'LaTeX: {latex_code}', title=f'LaTeX: {latex_code}', style='max-width: 100%; height: auto; display: block; margin: 0 auto;')
+                                new_div.append(new_img)
+                                img.replace_with(new_div)
+                            except Exception as e:
+                                print(f"Failed to process LaTeX equation {latex_code}: {e}")
+                                # 如果处理失败，显示LaTeX代码
+                                new_div = soup.new_tag('div', **{'class': 'math-equation-text', 'style': 'text-align: center; margin: 1em 0; padding: 0.5em; background-color: #f0f0f0; border: 1px solid #ccc; border-radius: 4px; font-family: monospace;'})
+                                new_div.string = f'$${latex_code}$$'
+                                img.replace_with(new_div)
+                        else:
+                            print(f"Failed to render LaTeX equation: {latex_code} (Status: {img_resp.status_code})")
+                            # 显示LaTeX代码
+                            new_div = soup.new_tag('div', **{'class': 'math-equation-text', 'style': 'text-align: center; margin: 1em 0; padding: 0.5em; background-color: #f0f0f0; border: 1px solid #ccc; border-radius: 4px; font-family: monospace;'})
+                            new_div.string = f'$${latex_code}$$'
+                            img.replace_with(new_div)
+                    else:
+                        print(f"No LaTeX code found in URL: {img_url}")
+                        new_a = soup.new_tag('a', href=img_url)
+                        new_a.string = '[数学公式]'
+                        img.replace_with(new_a)
+                except Exception as e:
+                    print(f"Error processing math equation URL {img_url}: {e}")
+                    new_a = soup.new_tag('a', href=img_url)
+                    new_a.string = '[数学公式]'
+                    img.replace_with(new_a)
+                finally:
+                    with lock:
+                        progress[0] += 1
+                return
+            
+            # 处理相对URL
             if not img_url.startswith(('http://', 'https://')):
                 parsed_url = urlparse(img_url)
                 if not parsed_url.netloc:
@@ -160,98 +292,92 @@ def download_images(html_content, book, feed_title):
                     if base_url:
                         img_url = base_url
             
-            print(f"Downloading image: {img_url}")
-            # Download image
-            img_resp = requests.get(img_url, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }, timeout=10)
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+            }
+            if referer:
+                headers['Referer'] = referer
             
+            img_resp = requests.get(img_url, headers=headers, timeout=10)
             if img_resp.status_code == 200:
-                # Process and resize image
                 try:
                     from PIL import Image
                     import io
-                    
-                    # Load image from response content
                     original_image = Image.open(io.BytesIO(img_resp.content))
                     
-                    # Get original size
-                    original_width, original_height = original_image.size
-                    print(f"Original image size: {original_width}x{original_height}")
+                    # 处理Palette模式
+                    if original_image.mode == 'P':
+                        original_image = original_image.convert('RGBA')
                     
-                    # Calculate new size (30% of original)
+                    # 强制转换为RGB模式以确保兼容性
+                    if original_image.mode not in ['RGB', 'L']:
+                        original_image = original_image.convert('RGB')
+                    
+                    original_width, original_height = original_image.size
                     new_width = int(original_width * 0.3)
                     new_height = int(original_height * 0.3)
-                    
-                    # Resize image
                     resized_image = original_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                    print(f"Resized image to: {new_width}x{new_height}")
                     
-                    # Save resized image to bytes
+                    # 确保调整大小后的图片也是RGB
+                    if resized_image.mode != 'RGB':
+                        resized_image = resized_image.convert('RGB')
+                    
                     img_bytes = io.BytesIO()
                     
-                    # Determine format and save
-                    if original_image.format in ['JPEG', 'JPG']:
-                        # Convert RGBA to RGB if necessary for JPEG
-                        if resized_image.mode == 'RGBA':
-                            rgb_image = Image.new('RGB', resized_image.size, (255, 255, 255))
-                            rgb_image.paste(resized_image, mask=resized_image.split()[-1])
-                            resized_image = rgb_image
-                        resized_image.save(img_bytes, format='JPEG', quality=85, optimize=True)
-                        img_filename = f"image_{feed_title.replace(' ', '_')}_{i}.jpg"
-                        media_type = 'image/jpeg'
-                    else:
-                        # Save as PNG for other formats
-                        resized_image.save(img_bytes, format='PNG', optimize=True)
-                        img_filename = f"image_{feed_title.replace(' ', '_')}_{i}.png"
-                        media_type = 'image/png'
+                    # 总是保存为JPEG格式以保证兼容性
+                    resized_image.save(img_bytes, format='JPEG', quality=85, optimize=True)
+                    img_filename = f"image_{feed_title.replace(' ', '_')}_{idx}.jpg"
+                    media_type = 'image/jpeg'
                     
                     resized_content = img_bytes.getvalue()
-                    
-                    # Add resized image to ebook
                     img_item = epub.EpubItem(
-                        uid=f'image_{feed_title}_{i}',
+                        uid=f'image_{feed_title}_{idx}',
                         file_name=f'images/{img_filename}',
                         media_type=media_type,
                         content=resized_content
                     )
                     book.add_item(img_item)
-                    
-                    # 强制居中：包装图片在div容器中
                     img_parent = img.parent
                     new_div = soup.new_tag('div', **{'class': 'image-container', 'style': 'text-align: center; margin: 1em 0;'})
                     new_img = soup.new_tag('img', src=f'images/{img_filename}', alt=img.get('alt', ''), style='max-width: 100%; height: auto; display: block; margin: 0 auto;')
-                    
                     new_div.append(new_img)
                     img.replace_with(new_div)
-                    
-                    print(f"Resized image saved as: {img_filename}")
-                    
-                except Exception as resize_error:
-                    print(f"Failed to resize image, using original: {resize_error}")
-                    # Fallback to original image if resize fails
-                    img_filename = f"image_{feed_title.replace(' ', '_')}_{i}.jpg"
-                    img_item = epub.EpubItem(
-                        uid=f'image_{feed_title}_{i}',
-                        file_name=f'images/{img_filename}',
-                        media_type='image/jpeg',
-                        content=img_resp.content
-                    )
-                    book.add_item(img_item)
-                    
-                    # 强制居中：包装图片在div容器中
-                    img_parent = img.parent
-                    new_div = soup.new_tag('div', **{'class': 'image-container', 'style': 'text-align: center; margin: 1em 0;'})
-                    new_img = soup.new_tag('img', src=f'images/{img_filename}', alt=img.get('alt', ''), style='max-width: 100%; height: auto; display: block; margin: 0 auto;')
-                    
-                    new_div.append(new_img)
-                    img.replace_with(new_div)
-                    
-                    print(f"Original image saved as: {img_filename}")
-                    
+                except Exception as e:
+                    print(f"Failed to process image {img_url}: {e}")
+                    # 如果处理失败，移除图片标签
+                    img.decompose()
+            elif img_resp.status_code == 403:
+                print(f"403 Forbidden for image: {img_url}. Skipping this image.")
+                img.decompose()
+            else:
+                print(f"Failed to download image: {img_url} (Status: {img_resp.status_code}). Skipping.")
+                img.decompose()
         except Exception as e:
-            print(f"Failed to download image: {e}")
+            print(f"Error in process_image: {e}")
+            img.decompose()
+        finally:
+            with lock:
+                progress[0] += 1
+
+    # 启动进度条线程
+    progress_thread = threading.Thread(target=show_progress)
+    progress_thread.start()
+
+    # 使用线程池进行并发下载，最大8个线程
+    max_workers = min(8, total)  # 最大8个线程，避免过多线程
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # 提交所有任务
+        futures = [executor.submit(process_image, i, img) for i, img in enumerate(images)]
+        # 等待所有任务完成
+        concurrent.futures.wait(futures)
     
+    progress_thread.join()
     return str(soup)
 
 def generate_identicon(width=1264, height=1680, block_size=140, background_color=(255, 255, 255), colors=None):
@@ -533,7 +659,7 @@ def create_combined_epub(feeds):
             content = clean_html(content)
             
             # Download images
-            content = download_images(content, book, f"{feed_index}_{entry_index}")
+            content = download_images(content, book, f"{feed_index}_{entry_index}", entry.link)
             
             # Create chapter
             chapter = epub.EpubHtml(
