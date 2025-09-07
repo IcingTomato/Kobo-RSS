@@ -88,8 +88,6 @@ def read_config():
 
 def fetch_rss_content(url):
     """Fetch and parse RSS feed content"""
-    print(f"Fetching RSS from: {url}")
-    
     # Add headers to simulate a browser request
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -99,10 +97,8 @@ def fetch_rss_content(url):
     try:
         # First try to get the raw content with requests
         response = requests.get(url, headers=headers, timeout=30)
-        print(f"HTTP status code: {response.status_code}")
         
         if response.status_code != 200:
-            print(f"Warning: HTTP error {response.status_code} when accessing {url}")
             return feedparser.FeedParserDict({'entries': []})
         
         # Pass the raw content to feedparser
@@ -110,26 +106,16 @@ def fetch_rss_content(url):
         
         # Check if we got a valid feed
         if 'status' in feed and feed.status != 200:
-            print(f"Warning: Feed status {feed.status} for {url}")
+            return feed
         
         if not feed.entries:
-            print(f"Warning: No entries found in feed: {url}")
-            print(f"Feed structure: {feed.keys()}")
-            if 'bozo_exception' in feed:
-                print(f"Feed parser exception: {feed.bozo_exception}")
             return feed
         
         # Print some debug info about the feed
-        print(f"Feed contains {len(feed.entries)} entries")
-        print(f"Feed title: {feed.feed.get('title', 'Unknown')}")
-        
-        # Limit to just 5 most recent entries
         feed.entries = feed.entries[:10]
-        print(f"Retrieved {len(feed.entries)} entries from {url}")
         return feed
         
     except Exception as e:
-        print(f"Error fetching {url}: {e}")
         # Return an empty feed
         return feedparser.FeedParserDict({'entries': []})
 
@@ -753,34 +739,48 @@ def main():
             print("Error: No RSS links found in config file")
             return
         
-        # Fetch content for each RSS feed
+        # Fetch content for each RSS feed with progress bar
         feeds = []
-        for link in rss_links:
+        total_feeds = len(rss_links)
+        successful_feeds = 0
+        
+        print(f"\n开始获取 {total_feeds} 个RSS源...")
+        
+        for i, link in enumerate(rss_links, 1):
             try:
+                # 显示当前进度
+                progress = f"[{i}/{total_feeds}] "
+                print(f"\n{progress}正在获取: {link}")
+                
                 feed = fetch_rss_content(link)
                 if feed.entries:
                     feeds.append(feed)
-                    print(f"Successfully added feed: {feed.feed.get('title', 'Unknown')}")
+                    successful_feeds += 1
+                    feed_title = feed.feed.get('title', 'Unknown')
+                    print(f"{progress}✓ 成功: {feed_title} ({len(feed.entries)}篇文章)")
                 else:
-                    print(f"Skipping empty feed: {link}")
+                    print(f"{progress}✗ 跳过: {link} (无内容)")
             except Exception as e:
-                print(f"Error processing feed {link}: {e}")
+                print(f"{progress}✗ 错误: {link} ({e})")
+        
+        print(f"\n获取完成: {successful_feeds}/{total_feeds} 个RSS源成功")
         
         if not feeds:
-            print("Error: Could not retrieve any content from the RSS feeds")
-            print("Troubleshooting tips:")
-            print("1. Check your internet connection")
-            print("2. Verify the RSS URLs in your config file")
-            print("3. Try opening the RSS URLs in a web browser")
-            print("4. Some websites may block automated requests")
+            print("错误: 无法从RSS源获取任何内容")
+            print("故障排除提示:")
+            print("1. 检查网络连接")
+            print("2. 验证配置文件中的RSS URL")
+            print("3. 尝试在浏览器中打开RSS URL")
+            print("4. 某些网站可能会阻止自动化请求")
             return
         
         # Create combined EPUB
+        print(f"\n正在创建EPUB文件 ({len(feeds)}个源, {sum(len(feed.entries) for feed in feeds)}篇文章)...")
         epub_file = create_combined_epub(feeds)
-        print(f"EPUB creation complete: {epub_file}")
+        print(f"EPUB创建完成: {epub_file}")
         
     except Exception as e:
-        print(f"Error occurred: {e}")
+        print(f"发生错误: {e}")
         import traceback
         print(traceback.format_exc())
 
