@@ -1,0 +1,11 @@
+feedparser 
+ebooklib 
+beautifulsoup4 
+requests
+pillow
+flask
+dropbox
+google-cloud-storage
+google-auth
+google-auth-oauthlib
+google-auth-httplib2

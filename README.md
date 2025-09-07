@@ -4,6 +4,10 @@ Kobo eReader RSS feed collection to ePub script
 
 [中文](./doc/README-zh_cn.md)
 
+<img src="img/1.png" alt="rss" width="90%">
+
+</br>
+
 <img src="img/screen_001.png" alt="rss" width="30%"><img src="img/screen_002.png" alt="rss" width="30%"><img src="img/screen_003.png" alt="rss" width="30%">
 
 ## Installation
